@@ -1,0 +1,32 @@
+package com.chami537.datememory.data
+
+import com.chami537.datememory.model.DateEvent
+import kotlinx.coroutines.flow.Flow
+
+class EventRepository(private val eventDao: EventDao) {
+    val allEvents: Flow<List<DateEvent>> = eventDao.getAllEvents()
+
+    suspend fun insert(event: DateEvent) {
+        eventDao.insertEvent(event)
+    }
+
+    suspend fun delete(event: DateEvent) {
+        eventDao.deleteEvent(event)
+    }
+
+    suspend fun getEventById(id: Long): DateEvent? {
+        return eventDao.getEventById(id)
+    }
+
+    suspend fun getAllEventsOnce(): List<DateEvent> {
+        return eventDao.getAllEventsOnce()
+    }
+
+    suspend fun updateEvents(events: List<DateEvent>) {
+        eventDao.updateEvents(events)
+    }
+
+    suspend fun deleteAllAndInsertAll(events: List<DateEvent>) {
+        eventDao.deleteAllAndInsertAll(events)
+    }
+}

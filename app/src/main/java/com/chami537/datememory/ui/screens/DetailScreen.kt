@@ -1,0 +1,645 @@
+package com.chami537.datememory.ui.screens
+
+import android.app.Activity
+import android.net.Uri
+import android.os.Build
+import android.view.WindowManager
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import coil.compose.AsyncImage
+import com.chami537.datememory.R
+import com.chami537.datememory.model.DateEvent
+import com.chami537.datememory.model.DisplayMode
+import com.chami537.datememory.utils.FileUtils
+import com.chami537.datememory.utils.TimeUtils
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
+import java.util.Locale
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DetailScreen(
+    events: List<DateEvent>,
+    initialEventId: Long,
+    onBack: () -> Unit,
+    onUpdateEvent: (DateEvent) -> Unit = {}
+) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    var showControls by remember { mutableStateOf(false) }
+    var showBottomSheet by remember { mutableStateOf(false) }
+    var captureTrigger by remember { mutableIntStateOf(0) }
+    val sheetState = rememberModalBottomSheetState()
+    
+    // 日期选择
+    var showDatePicker by remember { mutableStateOf(false) }
+    val datePickerState = rememberDatePickerState()
+
+    val initialIndex = remember(events, initialEventId) {
+        events.indexOfFirst { it.id == initialEventId }.coerceAtLeast(0)
+    }
+    val pagerState = rememberPagerState(initialPage = initialIndex, pageCount = { events.size })
+
+    // 图片选择器
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            val currentEvent = events.getOrNull(pagerState.currentPage)
+            if (currentEvent != null) {
+                val localPath = FileUtils.saveImageToInternalStorage(context, it)
+                if (localPath != null) {
+                    onUpdateEvent(currentEvent.copy(backgroundUri = localPath))
+                }
+            }
+        }
+    }
+
+    if (!view.isInEditMode) {
+        DisposableEffect(androidx.compose.foundation.isSystemInDarkTheme()) {
+            val window = (view.context as Activity).window
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            
+            val originalStatusBarLight = insetsController.isAppearanceLightStatusBars
+            val originalNavBarLight = insetsController.isAppearanceLightNavigationBars
+            
+            insetsController.isAppearanceLightStatusBars = false
+            insetsController.isAppearanceLightNavigationBars = false
+            
+            onDispose {
+                insetsController.isAppearanceLightStatusBars = originalStatusBarLight
+                insetsController.isAppearanceLightNavigationBars = originalNavBarLight
+            }
+        }
+        
+        SideEffect {
+            val window = (view.context as Activity).window
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+    }
+
+    if (events.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(stringResource(R.string.no_data))
+        }
+        return
+    }
+
+    androidx.activity.compose.BackHandler(onBack = onBack)
+
+    Box(modifier = Modifier
+        .fillMaxSize()
+        .clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null
+        ) {
+            showControls = !showControls
+        }
+    ) {
+        Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+            VerticalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                key = { events[it].id },
+                userScrollEnabled = !showBottomSheet
+            ) { pageIndex ->
+                EventDetailItem(
+                    event = events[pageIndex],
+                    shouldCapture = captureTrigger,
+                    isCurrentPage = pagerState.currentPage == pageIndex,
+                    onCaptured = { captureTrigger = 0 }
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showControls,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.3f))
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showControls,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButtonWithPulse(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    onClick = { onBack() }
+                )
+                
+                IconButtonWithPulse(
+                    icon = Icons.Default.MoreVert,
+                    onClick = { 
+                        showBottomSheet = true
+                    }
+                )
+            }
+        }
+
+        if (showBottomSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showBottomSheet = false },
+                sheetState = sheetState,
+                containerColor = Color.Transparent,
+                dragHandle = null,
+                scrimColor = Color.Black.copy(alpha = 0.4f),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 32.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(28.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        shadowElevation = 12.dp,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column {
+                            DetailActionItem(
+                                icon = Icons.Default.SaveAlt,
+                                title = stringResource(R.string.save_image),
+                                subtitle = stringResource(R.string.save_image_subtitle),
+                                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                                onClick = { 
+                                    showBottomSheet = false
+                                    showControls = false
+                                    captureTrigger++
+                                }
+                            )
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 24.dp),
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            )
+                            DetailActionItem(
+                                icon = Icons.Default.Image,
+                                title = stringResource(R.string.change_background),
+                                subtitle = stringResource(R.string.change_background_subtitle),
+                                shape = RectangleShape,
+                                onClick = { 
+                                    showBottomSheet = false
+                                    imagePickerLauncher.launch("image/*")
+                                }
+                            )
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 24.dp),
+                                thickness = 0.5.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            )
+                            DetailActionItem(
+                                icon = Icons.Default.CalendarMonth,
+                                title = stringResource(R.string.adjust_date),
+                                subtitle = stringResource(R.string.adjust_date_subtitle),
+                                shape = RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp),
+                                onClick = { 
+                                    showBottomSheet = false
+                                    showDatePicker = true
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 小一些的日期选择器
+        if (showDatePicker) {
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { showDatePicker = false },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(28.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp,
+                    modifier = Modifier
+                        // 手机上默认 320dp，在大屏（如 Pad）下最高可扩展至 480dp
+                        .widthIn(min = 320.dp, max = 480.dp)
+                        .fillMaxWidth(0.85f)
+                        .wrapContentHeight()
+                ) {
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        val scope = this
+                        // 根据容器实际宽度计算缩放比例。360dp 是 DatePicker 完整显示所需的理想宽度。
+                        val scale = (scope.maxWidth / 360.dp).coerceIn(0.88f, 1.1f)
+                        
+                        Column(
+                            modifier = Modifier.padding(top = 20.dp, bottom = 0.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = stringResource(R.string.select_date),
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                modifier = Modifier
+                                    .align(Alignment.Start)
+                                    .padding(start = 20.dp, end = 20.dp, bottom = 8.dp)
+                            )
+                            
+                            Box(
+                                modifier = Modifier.fillMaxWidth().wrapContentHeight(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                // 通过局部覆盖 Typography 来拉开星期与日期之间的间隙
+                                MaterialTheme(
+                                    colorScheme = MaterialTheme.colorScheme,
+                                    shapes = MaterialTheme.shapes,
+                                    typography = MaterialTheme.typography.copy(
+                                        labelLarge = MaterialTheme.typography.labelLarge.copy(
+                                            fontSize = 12.sp,
+                                            lineHeight = 48.sp
+                                        )
+                                    )
+                                ) {
+                                    DatePicker(
+                                        state = datePickerState,
+                                        title = null,
+                                        headline = null,
+                                        showModeToggle = false,
+                                        colors = DatePickerDefaults.colors(
+                                            containerColor = MaterialTheme.colorScheme.surface,
+                                            dividerColor = Color.Transparent
+                                        ),
+                                        modifier = Modifier
+                                            // 强制指定 DatePicker 宽度为 360dp 以防止其内部日期列丢失
+                                            .requiredWidth(360.dp)
+                                            // 缩放以适配外部 Surface 容器
+                                            .scale(scale)
+                                            // 向上偏移，减少与标题的间距
+                                            .offset(y = (-12).dp)
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp)
+                                    // 向上偏移，减少与日历底部的间距
+                                    .offset(y = (-20).dp),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = { showDatePicker = false }) {
+                                    Text(stringResource(R.string.cancel))
+                                }
+                                TextButton(onClick = {
+                                    val selectedMillis = datePickerState.selectedDateMillis
+                                    if (selectedMillis != null) {
+                                        val currentEvent = events.getOrNull(pagerState.currentPage)
+                                        if (currentEvent != null) {
+                                            val isFuture = selectedMillis > System.currentTimeMillis()
+                                            val newMode = if (isFuture) DisplayMode.COUNT_DOWN else DisplayMode.ACCUMULATE
+                                            onUpdateEvent(currentEvent.copy(
+                                                targetDate = selectedMillis,
+                                                isFuture = isFuture,
+                                                mode = newMode
+                                            ))
+                                        }
+                                    }
+                                    showDatePicker = false
+                                }) {
+                                    Text(stringResource(R.string.confirm))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DetailActionItem(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    shape: Shape,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = Color.Transparent,
+        shape = shape,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(20.dp))
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun IconButtonWithPulse(
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isClicked by remember { mutableStateOf(false) }
+    val pulseScale = remember { Animatable(1f) }
+    val pulseAlpha = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(isClicked) {
+        if (isClicked) {
+            pulseScale.snapTo(1f)
+            pulseAlpha.snapTo(0.5f)
+            scope.launch {
+                pulseScale.animateTo(2f, tween(400, easing = LinearOutSlowInEasing))
+            }
+            scope.launch {
+                pulseAlpha.animateTo(0f, tween(400))
+            }
+            isClicked = false
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                isClicked = true
+                onClick()
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .scale(pulseScale.value)
+                .alpha(pulseAlpha.value)
+                .background(Color.White.copy(alpha = 0.2f), CircleShape)
+        )
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = Color.White
+        )
+    }
+}
+
+@Composable
+fun EventDetailItem(
+    event: DateEvent,
+    shouldCapture: Int = 0,
+    isCurrentPage: Boolean = false,
+    onCaptured: () -> Unit = {}
+) {
+    val context = LocalContext.current
+    val graphicsLayer = rememberGraphicsLayer()
+    val targetLocalDate = Instant.ofEpochMilli(event.targetDate).atZone(ZoneId.systemDefault()).toLocalDate()
+    val days = ChronoUnit.DAYS.between(LocalDate.now(), targetLocalDate).let { if (it < 0) -it else it }
+
+    val animatedDays = remember { Animatable(0f) }
+    var detailedTime by remember { mutableStateOf(TimeUtils.getDetailedTime(event.targetDate)) }
+
+    LaunchedEffect(shouldCapture) {
+        if (shouldCapture > 0 && isCurrentPage) {
+            try {
+                delay(200)
+                val bitmap = graphicsLayer.toImageBitmap()
+                val success = com.chami537.datememory.utils.ImageUtils.saveBitmapToGallery(
+                    context = context,
+                    imageBitmap = bitmap,
+                    fileName = "DateMemory_${event.title}_${System.currentTimeMillis()}"
+                )
+                if (success) {
+                    Toast.makeText(context, R.string.image_saved, Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, R.string.save_failed, Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                onCaptured()
+            }
+        }
+    }
+
+    // 结合日期变化和进入页面状态的效果
+    LaunchedEffect(event.id, event.targetDate, isCurrentPage) {
+        if (isCurrentPage) {
+            // 检查是否需要从当前开始或重置
+            if (animatedDays.value == 0f || animatedDays.value > days) {
+                animatedDays.snapTo(0f)
+            }
+            animatedDays.animateTo(
+                targetValue = days.toFloat(),
+                animationSpec = tween(durationMillis = 800)
+            )
+        } else {
+            // 不可见就重置为 0
+            animatedDays.snapTo(0f)
+        }
+    }
+
+    LaunchedEffect(event.id, event.targetDate) {
+        while (true) {
+            detailedTime = TimeUtils.getDetailedTime(event.targetDate)
+            delay(1000)
+        }
+    }
+
+    Box(modifier = Modifier
+        .fillMaxSize()
+        .drawWithContent {
+            graphicsLayer.record {
+                this@drawWithContent.drawContent()
+            }
+            drawLayer(graphicsLayer)
+        }
+    ) {
+        if (event.backgroundUri != null) {
+            AsyncImage(
+                model = coil.request.ImageRequest.Builder(LocalContext.current)
+                    .data(event.backgroundUri)
+                    .crossfade(1000)
+                    .build(),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+        
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = event.maskOpacity)))
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            val prefix = if (event.isFuture) stringResource(R.string.label_until) else stringResource(R.string.label_since)
+            
+            // 构造每9字换行且前缀紧跟末尾的标题（总长限35字）
+            val annotatedTitle = remember(event.title, prefix) {
+                val displayTitle = if (event.title.length > 35) {
+                    event.title.take(32) + "..."
+                } else {
+                    event.title
+                }
+                
+                androidx.compose.ui.text.buildAnnotatedString {
+                    val chunks = displayTitle.chunked(9)
+                    chunks.forEachIndexed { index, chunk ->
+                        append(chunk)
+                        if (index < chunks.size - 1) append("\n")
+                    }
+                    append(" ")
+                    pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.White.copy(alpha = 0.7f)))
+                    append(prefix)
+                    pop()
+                }
+            }
+
+            Text(
+                text = annotatedTitle,
+                color = Color.White,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontWeight = FontWeight.Light,
+                    letterSpacing = 4.sp
+                ),
+                modifier = Modifier.padding(horizontal = 32.dp)
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            val daysStr = days.toString()
+            val fontSize = when {
+                daysStr.length >= 8 -> 60.sp
+                daysStr.length >= 7 -> 72.sp
+                daysStr.length >= 6 -> 88.sp
+                daysStr.length >= 5 -> 100.sp
+                else -> 120.sp
+            }
+
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    text = animatedDays.value.toInt().toString(),
+                    style = MaterialTheme.typography.displayLarge.copy(
+                        fontSize = fontSize,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                )
+            }
+            
+            val datePrefix = if (event.isFuture) stringResource(R.string.label_from) else stringResource(R.string.label_since_date)
+            Text(
+                text = "$datePrefix $targetLocalDate",
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = Color.White.copy(alpha = 0.6f),
+                    letterSpacing = 2.sp
+                )
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = String.format(Locale.getDefault(), "%02d:%02d:%02d", detailedTime.hours, detailedTime.minutes, detailedTime.seconds),
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    color = Color.White.copy(alpha = 0.8f),
+                    letterSpacing = 4.sp
+                )
+            )
+        }
+    }
+}

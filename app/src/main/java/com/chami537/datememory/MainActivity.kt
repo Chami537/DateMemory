@@ -1,0 +1,414 @@
+package com.chami537.datememory
+
+import android.app.Activity
+import android.content.Context
+import android.content.res.Configuration
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesomeMotion
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.chami537.datememory.model.DateEvent
+import com.chami537.datememory.model.DisplayMode
+import com.chami537.datememory.ui.theme.DateMemoryTheme
+import com.chami537.datememory.utils.LanguageMode
+import com.chami537.datememory.utils.LanguagePreferences
+import com.chami537.datememory.utils.ThemeMode
+import com.chami537.datememory.utils.ThemePreferences
+import com.chami537.datememory.viewmodel.EventViewModel
+import java.util.Locale
+import kotlinx.coroutines.launch
+
+class MainActivity : ComponentActivity() {
+    
+    // 专门用于强制同步状态栏的函数
+    private fun forceUpdateSystemBars(isDark: Boolean) {
+        // 针对 ColorOS 补丁（因为我是 ColorOS） 使用官方方法
+        enableEdgeToEdge(
+            statusBarStyle = if (isDark) {
+                SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+            } else {
+                SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+            }
+        )
+        // 再用底层方法双重锁定
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.isAppearanceLightStatusBars = !isDark
+        controller.isAppearanceLightNavigationBars = !isDark
+    }
+
+    override fun attachBaseContext(newBase: Context?) {
+        val mode = LanguagePreferences.getLanguageMode(newBase!!)
+        val locale = when (mode) {
+            LanguageMode.SYSTEM -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                newBase.resources.configuration.locales[0]
+            } else {
+                @Suppress("DEPRECATION")
+                newBase.resources.configuration.locale
+            }
+            LanguageMode.CHINESE -> Locale("zh")
+            LanguageMode.ENGLISH -> Locale("en")
+        }
+
+        val localeListCompat = when (mode) {
+            LanguageMode.SYSTEM -> LocaleListCompat.getEmptyLocaleList()
+            else -> LocaleListCompat.create(locale)
+        }
+        AppCompatDelegate.setApplicationLocales(localeListCompat)
+
+        val config = Configuration(newBase.resources.configuration).apply {
+            setLocale(locale)
+        }
+        super.attachBaseContext(newBase.createConfigurationContext(config))
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // 启动时的第一次硬性同步
+        val initialMode = ThemePreferences.getThemeMode(this)
+        val isInitialDark = when (initialMode) {
+            ThemeMode.SYSTEM -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+            ThemeMode.LIGHT -> false
+            ThemeMode.DARK -> true
+        }
+        
+        // ColorOS 补丁 确保 DecorView 已经初始化
+        window.decorView.post {
+            forceUpdateSystemBars(isInitialDark)
+        }
+
+        setContent {
+            val eventViewModel: EventViewModel = viewModel()
+            val events by eventViewModel.allEvents.collectAsState()
+            val context = this
+            var themeMode by remember { mutableStateOf(ThemePreferences.getThemeMode(context)) }
+            val darkTheme = when (themeMode) {
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+
+            // 监听 darkTheme 变化，实时
+            val view = LocalView.current
+            SideEffect {
+                if (!view.isInEditMode) {
+                    forceUpdateSystemBars(darkTheme)
+                }
+            }
+
+            DateMemoryTheme(darkTheme = darkTheme) {
+                MainApp(
+                    eventViewModel = eventViewModel,
+                    events = events,
+                    themeMode = themeMode,
+                    onThemeModeChange = { mode ->
+                        themeMode = mode
+                        ThemePreferences.setThemeMode(context, mode)
+                    },
+                    onAddEvent = { eventViewModel.addEvent(it) },
+                    onDeleteEvent = { eventViewModel.deleteEvent(it) }
+                )
+            }
+        }
+    }
+
+    // 处理后台切回
+    override fun onResume() {
+        super.onResume()
+        val currentMode = ThemePreferences.getThemeMode(this)
+        val isDark = when (currentMode) {
+            ThemeMode.SYSTEM -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+            ThemeMode.LIGHT -> false
+            ThemeMode.DARK -> true
+        }
+        forceUpdateSystemBars(isDark)
+    }
+}
+
+sealed class Screen(val route: String, val icon: ImageVector) {
+    data object Home : Screen("home", Icons.Default.DateRange)
+    data object Detail : Screen("detail/{eventId}", Icons.Default.AutoAwesomeMotion) {
+        fun createRoute(eventId: Long) = "detail/$eventId"
+    }
+    data object Settings : Screen("settings", Icons.Default.Settings)
+    data object Editor : Screen("editor", Icons.Default.Add)
+}
+
+@Composable
+fun MainApp(
+    eventViewModel: EventViewModel? = null,
+    events: List<DateEvent> = emptyList(),
+    themeMode: ThemeMode = ThemeMode.SYSTEM,
+    onThemeModeChange: (ThemeMode) -> Unit = {},
+    onAddEvent: (DateEvent) -> Unit = {},
+    onDeleteEvent: (DateEvent) -> Unit = {},
+) {
+    val navController = rememberNavController()
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentDestination = navBackStackEntry?.destination
+    val coroutineScope = rememberCoroutineScope()
+
+    val pagerState = rememberPagerState(pageCount = { 3 })
+    
+    // 同步底部栏可见性
+    // 使用 targetPage 防止跨页跳转闪烁
+    val showBottomBar = currentDestination?.route == "main_pager" && pagerState.targetPage != 1
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            NavHost(
+                navController = navController,
+                startDestination = "main_pager",
+                modifier = Modifier.fillMaxSize(),
+                enterTransition = { fadeIn(tween(400)) },
+                exitTransition = { fadeOut(tween(400)) },
+            ) {
+                composable(route = "main_pager") {
+                    HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier.fillMaxSize(),
+                        beyondViewportPageCount = 2
+                    ) { page ->
+                        when (page) {
+                            0 -> com.chami537.datememory.ui.screens.HomeScreen(
+                                events = events,
+                                onAddClick = { navController.navigate(Screen.Editor.route) },
+                                onEventClick = { event ->
+                                    navController.navigate(Screen.Detail.createRoute(event.id))
+                                },
+                                onDeleteEvent = onDeleteEvent,
+                                onUpdateOrder = { eventViewModel?.updateEventsOrder(it) }
+                            )
+                            1 -> {
+                                val firstEventId = events.firstOrNull()?.id ?: 0L
+                                com.chami537.datememory.ui.screens.DetailScreen(
+                                    events = events,
+                                    initialEventId = firstEventId,
+                                    onBack = { 
+                                        coroutineScope.launch {
+                                            pagerState.animateScrollToPage(0)
+                                        }
+                                    },
+                                    onUpdateEvent = { onAddEvent(it) }
+                                )
+                            }
+                            2 -> com.chami537.datememory.ui.screens.SettingsScreen(
+                                themeMode = themeMode,
+                                onThemeModeChange = onThemeModeChange
+                            )
+                        }
+                    }
+                }
+
+                composable(
+                    route = Screen.Detail.route,
+                    arguments = listOf(androidx.navigation.navArgument("eventId") { type = androidx.navigation.NavType.LongType }),
+                    enterTransition = { fadeIn(tween(500)) },
+                    exitTransition = { fadeOut(tween(500)) },
+                ) { backStackEntry ->
+                    val eventId = backStackEntry.arguments?.getLong("eventId") ?: 0L
+                    com.chami537.datememory.ui.screens.DetailScreen(
+                        events = events,
+                        initialEventId = eventId,
+                        onBack = { 
+                            navController.popBackStack()
+                        },
+                        onUpdateEvent = { onAddEvent(it) }
+                    )
+                }
+
+                composable(
+                    route = Screen.Editor.route,
+                    enterTransition = { slideInVertically(initialOffsetY = { it }) + fadeIn() },
+                    exitTransition = { fadeOut() + slideOutVertically(targetOffsetY = { it }) },
+                ) {
+                    com.chami537.datememory.ui.screens.EditorScreen(
+                        onDismiss = { navController.popBackStack() },
+                        onSave = { newEvent ->
+                            onAddEvent(newEvent)
+                            navController.popBackStack()
+                        },
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = showBottomBar,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                // 增加内边距 防止阴影被裁剪
+                Box(modifier = Modifier.padding(bottom = 24.dp, top = 12.dp, start = 12.dp, end = 12.dp)) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+                        tonalElevation = 8.dp,
+                        shadowElevation = 4.dp,
+                        modifier = Modifier
+                            .width(260.dp)
+                            .height(64.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // 首页
+                            val isHomeSelected = pagerState.targetPage == 0
+                            CustomNavBarItem(
+                                icon = { NavIconWithPulse(icon = Screen.Home.icon, isSelected = isHomeSelected) },
+                                selected = isHomeSelected,
+                                onClick = {
+                                    coroutineScope.launch {
+                                        pagerState.animateScrollToPage(0)
+                                    }
+                                }
+                            )
+
+                            // 详情
+                            val isDetailSelected = pagerState.targetPage == 1
+                            CustomNavBarItem(
+                                icon = { NavIconWithPulse(icon = Screen.Detail.icon, isSelected = isDetailSelected) },
+                                selected = isDetailSelected,
+                                onClick = {
+                                    coroutineScope.launch {
+                                        pagerState.animateScrollToPage(1)
+                                    }
+                                }
+                            )
+
+                            // 设置
+                            val isSettingsSelected = pagerState.targetPage == 2
+                            CustomNavBarItem(
+                                icon = { NavIconWithPulse(icon = Screen.Settings.icon, isSelected = isSettingsSelected) },
+                                selected = isSettingsSelected,
+                                onClick = {
+                                    coroutineScope.launch {
+                                        pagerState.animateScrollToPage(2)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RowScope.CustomNavBarItem(
+    selected: Boolean,
+    onClick: () -> Unit,
+    icon: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .weight(1f)
+            .selectable(
+                selected = selected,
+                onClick = onClick,
+                role = Role.Tab,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        icon()
+    }
+}
+
+@Composable
+fun NavIconWithPulse(icon: ImageVector, isSelected: Boolean) {
+    val pulseScale = remember { Animatable(1f) }
+    val pulseAlpha = remember { Animatable(0f) }
+
+    LaunchedEffect(isSelected) {
+        if (isSelected) {
+            pulseScale.snapTo(1f)
+            pulseAlpha.snapTo(0.5f)
+            
+            launch {
+                pulseScale.animateTo(2f, tween(400, easing = LinearOutSlowInEasing))
+            }
+            launch {
+                pulseAlpha.animateTo(0f, tween(400))
+            }
+        }
+    }
+
+    Box(contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .scale(pulseScale.value)
+                .alpha(pulseAlpha.value)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), CircleShape),
+        )
+        Icon(
+            imageVector = icon, 
+            contentDescription = null,
+            tint = if (isSelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MainAppPreview() {
+    DateMemoryTheme {
+        MainApp(
+            events = listOf(
+                DateEvent(
+                    id = 1, 
+                    title = "测试事件", 
+                    targetDate = System.currentTimeMillis() + 10 * 24 * 60 * 60 * 1000L,
+                    isFuture = true,
+                    mode = DisplayMode.COUNT_DOWN,
+                )
+            ),
+        )
+    }
+}
